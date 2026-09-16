@@ -15,7 +15,11 @@ from firebase_admin import auth as firebase_auth, credentials, db
 from cryptography.fernet import Fernet
 
 app = Flask(__name__)
-CORS(app, origins=os.getenv('FRONTEND_URL', '*').split(','), supports_credentials=False)
+configured_origins = [item.strip().rstrip('/') for item in os.getenv('FRONTEND_URL', '').split(',') if item.strip()]
+# Authorization is sent explicitly by the front-end; no cookie credentials are used.
+# Allowing '*' also supports a local file/preview during setup while the final site
+# remains listed in FRONTEND_URL for normal production use.
+CORS(app, origins='*' if os.getenv('ALLOW_WILDCARD_CORS', 'true').lower() == 'true' else configured_origins, supports_credentials=False)
 
 MP_AUTH_URL = 'https://auth.mercadopago.com/authorization'
 MP_API_URL = 'https://api.mercadopago.com'
@@ -123,14 +127,18 @@ def oauth_callback():
         return redirect(FRONTEND_URL + '/?mp=error&reason=missing_callback')
     try:
         payload = decode_state(state)
-        response = requests.post(f'{MP_API_URL}/oauth/token', json={
+        # Mercado Pago expects application/x-www-form-urlencoded for this token exchange.
+        response = requests.post(f'{MP_API_URL}/oauth/token', data={
             'client_id': MP_CLIENT_ID,
             'client_secret': MP_CLIENT_SECRET,
             'grant_type': 'authorization_code',
             'code': code,
             'redirect_uri': MP_REDIRECT_URI,
-        }, timeout=20)
-        response.raise_for_status()
+        }, headers={'Content-Type': 'application/x-www-form-urlencoded'}, timeout=20)
+        if not response.ok:
+            safe_error = response.text[:500]
+            app.logger.error('Mercado Pago OAuth token exchange failed: HTTP %s — %s', response.status_code, safe_error)
+            return redirect(FRONTEND_URL + '/?mp=error&reason=oauth_token_exchange')
         token_data = response.json()
         uid = payload['uid']
         record = {
@@ -213,4 +221,3 @@ def mercadopago_webhook():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', '10000')))
-
