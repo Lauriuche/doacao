@@ -25,8 +25,16 @@ MP_CLIENT_SECRET = os.environ['MERCADOPAGO_CLIENT_SECRET']
 MP_REDIRECT_URI = os.environ['MERCADOPAGO_REDIRECT_URI']
 MP_WEBHOOK_URL = os.environ['MERCADOPAGO_WEBHOOK_URL']
 STATE_SECRET = os.environ['OAUTH_STATE_SECRET'].encode()
-TOKEN_KEY = os.environ['TOKEN_ENCRYPTION_KEY'].encode()
-fernet = Fernet(TOKEN_KEY)
+TOKEN_KEY = os.environ['TOKEN_ENCRYPTION_KEY'].strip().encode()
+try:
+    # Fernet expects the output of Fernet.generate_key(): 44 URL-safe base64 chars.
+    fernet = Fernet(TOKEN_KEY)
+except ValueError as exc:
+    raise RuntimeError(
+        'TOKEN_ENCRYPTION_KEY inválida. Gere uma chave nova com: '
+        'python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" '
+        'e cole o resultado completo, sem aspas ou espaços.'
+    ) from exc
 
 if not firebase_admin._apps:
     service_account = json.loads(os.environ['FIREBASE_SERVICE_ACCOUNT_JSON'])
@@ -76,12 +84,16 @@ def health():
 
 @app.get('/api/mercadopago/oauth/start')
 def oauth_start():
+    stage = 'auth'
     try:
         uid = bearer_uid()
+        stage = 'state'
         state = encode_state(uid)
+        stage = 'firebase_write'
         db.reference(f'users/{uid}/paymentConnections/mercadoPago').update({
             'status': 'pending', 'updatedAt': int(time.time() * 1000)
         })
+        stage = 'authorization_url'
         params = {
             'client_id': MP_CLIENT_ID,
             'response_type': 'code',
@@ -92,9 +104,15 @@ def oauth_start():
         return jsonify({'authorization_url': MP_AUTH_URL + '?' + urlencode(params), 'state': state})
     except PermissionError as exc:
         return jsonify({'error': str(exc)}), 401
+    except firebase_auth.InvalidIdTokenError:
+        app.logger.exception('oauth start: invalid Firebase ID token')
+        return jsonify({'error': 'firebase_token_invalid', 'message': 'O token do Firebase expirou ou pertence a outro projeto.'}), 401
+    except firebase_auth.ExpiredIdTokenError:
+        app.logger.exception('oauth start: expired Firebase ID token')
+        return jsonify({'error': 'firebase_token_expired', 'message': 'Atualize a sessão e tente novamente.'}), 401
     except Exception:
         app.logger.exception('oauth start failed')
-        return jsonify({'error': 'oauth_start_failed'}), 500
+        return jsonify({'error': 'oauth_start_failed', 'stage': stage, 'message': f'Falha na etapa {stage}. Verifique os logs do Render.'}), 500
 
 
 @app.get('/api/mercadopago/oauth/callback')
