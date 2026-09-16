@@ -17,7 +17,7 @@ from cryptography.fernet import Fernet
 app = Flask(__name__)
 CORS(app, origins=os.getenv('FRONTEND_URL', '*').split(','), supports_credentials=False)
 
-MP_AUTH_URL = 'https://auth.mercadopago.com.br/authorization'
+MP_AUTH_URL = 'https://auth.mercadopago.com/authorization'
 MP_API_URL = 'https://api.mercadopago.com'
 FRONTEND_URL = os.environ['FRONTEND_URL'].rstrip('/')
 MP_CLIENT_ID = os.environ['MERCADOPAGO_CLIENT_ID']
